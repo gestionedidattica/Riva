@@ -1337,14 +1337,16 @@ function resetRicercaDocente() {
 }
 
 function renderOrario(data) {
-  document.getElementById('orario-nome-docente').textContent = 'Docente: ' + data.nome;
+  const etichettaTipo = data.tipo === 'serale' ? ' 🌙 (corso Serale)' : '';
+  document.getElementById('orario-nome-docente').textContent = 'Docente: ' + data.nome + etichettaTipo;
   const giorni = ["lunedì","martedì","mercoledì","giovedì","venerdì"];
   const orario = data.orario;
+  const numOre = data.numOre || 8;
   let html = '<table class="table table-bordered table-sm tbl-orario">';
   html += '<thead><tr><th class="ora-label">Ora</th>';
   giorni.forEach(function(g) { html += '<th>' + g.charAt(0).toUpperCase() + g.slice(1) + '</th>'; });
   html += '</tr></thead><tbody>';
-  for (let ora = 1; ora <= 8; ora++) {
+  for (let ora = 1; ora <= numOre; ora++) {
     html += '<tr><td class="ora-label">' + ora + 'ª</td>';
     giorni.forEach(function(g) {
       const cella = (orario[g] && orario[g][ora]) ? orario[g][ora] : null;
