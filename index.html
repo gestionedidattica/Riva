@@ -292,6 +292,9 @@
     <a class="nav-link hide" id="tab-evac" href="#" onclick="switchTab('evac');return false;" role="tab">
       <span class="nav-emoji">🚨</span> Evacuazione
     </a>
+    <a class="nav-link hide" id="tab-crediti" href="#" onclick="switchTab('crediti');return false;" role="tab">
+      <span class="nav-emoji">🎓</span> Crediti
+    </a>
   </nav>
 
   <!-- ── I MIEI CDC ── -->
@@ -493,6 +496,22 @@
     <div id="evac-loader" class="text-center mt-2 hide">
       <span class="spinner-border text-danger spinner-border-sm"></span> Invio...
     </div>
+  </div>
+
+  <!-- ── CREDITI ── -->
+  <div id="pane-crediti" class="hide">
+    <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+      <h4 class="mb-0">🎓 Crediti riconosciuti</h4>
+      <button class="btn btn-sm btn-outline-secondary" onclick="toggleModificaMaterieCrediti()">✏️ Modifica materie</button>
+    </div>
+    <p class="small-muted mb-2" id="crediti-materie-info">Caricamento...</p>
+    <div id="crediti-materie-editor" class="card p-3 mb-3" style="display:none;">
+      <p class="small-muted mb-2">Seleziona le materie di cui vuoi vedere i crediti riconosciuti:</p>
+      <div id="crediti-materie-checklist" class="d-flex flex-wrap gap-3 mb-3"></div>
+      <button class="btn btn-sm btn-primary" onclick="applicaMaterieCrediti()">Applica</button>
+    </div>
+    <div id="crediti-loader" class="text-center py-3"><div class="spinner-border text-primary spinner-border-sm"></div> Caricamento...</div>
+    <div id="crediti-content"></div>
   </div>
 
   <div id="loader-dash" class="text-center mt-4 hide">
@@ -853,6 +872,7 @@ function caricaDashboard() {
 
       // Tab sempre visibili a tutti
       document.getElementById('tab-biblioteca').classList.remove('hide');
+      document.getElementById('tab-crediti').classList.remove('hide');
 
       if (res.isSegreteria) {
         // Segreteria: nasconde "I miei CdC" ed "Evacuazione", mostra tutto il resto
@@ -887,7 +907,7 @@ function caricaDashboard() {
 }
 
 function switchTab(t) {
-  ['cdc','coord','segr','calendario','orario','scrutini','biblioteca','evac'].forEach(function(x) {
+  ['cdc','coord','segr','calendario','orario','scrutini','biblioteca','evac','crediti'].forEach(function(x) {
     document.getElementById('pane-' + x).classList.add('hide');
     const tab = document.getElementById('tab-' + x);
     if (tab) tab.classList.remove('active');
@@ -900,6 +920,7 @@ function switchTab(t) {
   if (t === 'orario') caricaOrario();
   if (t === 'scrutini') caricaScrutini();
   if (t === 'biblioteca') caricaBiblioteca();
+  if (t === 'crediti') caricaCrediti();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1701,6 +1722,105 @@ function evacReset() {
   document.getElementById("evac-doc-feriti").value = "";
   ["pdr-cb","pdr-ct","pdr-rg","pdr-ip"].forEach(function(id) { var el = document.getElementById(id); if (el) el.classList.remove("evac-pdr-on"); });
   evacStati = {}; evacPDR = "";
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CREDITI RICONOSCIUTI
+// ═══════════════════════════════════════════════════════════════
+let creditiMaterieRilevate = [];
+let creditiMaterieDisponibili = [];
+let creditiMaterieSelezionate = null; // null = usa quelle rilevate automaticamente
+
+function caricaCrediti() {
+  document.getElementById('crediti-loader').style.display = 'block';
+  document.getElementById('crediti-content').innerHTML = '';
+  const payload = {};
+  if (creditiMaterieSelezionate) payload.materieSelezionate = creditiMaterieSelezionate;
+  apiCall('getCreditiDocente', payload)
+    .then(function(res) {
+      document.getElementById('crediti-loader').style.display = 'none';
+      if (!res.success) {
+        document.getElementById('crediti-content').innerHTML =
+          '<div class="alert alert-danger">' + escapeHtml(res.message || res.error || 'Errore.') + '</div>';
+        return;
+      }
+      creditiMaterieRilevate = res.materieRilevate || [];
+      creditiMaterieDisponibili = res.materieDisponibili || [];
+      renderMaterieInfoCrediti(res.materieUsate || []);
+      renderChecklistMaterieCrediti(res.materieUsate || []);
+      renderCrediti(res.perClasse || {});
+    })
+    .catch(function(err) {
+      document.getElementById('crediti-loader').style.display = 'none';
+      document.getElementById('crediti-content').innerHTML =
+        '<div class="alert alert-danger">Errore server: ' + escapeHtml(err.message) + '</div>';
+    });
+}
+
+function renderMaterieInfoCrediti(materieUsate) {
+  const info = document.getElementById('crediti-materie-info');
+  if (!materieUsate || materieUsate.length === 0) {
+    info.textContent = 'Nessuna materia rilevata automaticamente dal tuo orario. Usa "Modifica materie" per selezionarle a mano.';
+    return;
+  }
+  info.innerHTML = 'Materie mostrate: <strong>' + materieUsate.map(escapeHtml).join(', ') + '</strong> ' +
+    (creditiMaterieSelezionate
+      ? '<span class="badge bg-secondary">selezione manuale</span>'
+      : '<span class="badge bg-info text-dark">rilevate dal tuo orario</span>');
+}
+
+function toggleModificaMaterieCrediti() {
+  const el = document.getElementById('crediti-materie-editor');
+  el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
+}
+
+function renderChecklistMaterieCrediti(materieUsate) {
+  const cont = document.getElementById('crediti-materie-checklist');
+  const usateSet = {};
+  materieUsate.forEach(function(m) { usateSet[m] = true; });
+  cont.innerHTML = creditiMaterieDisponibili.map(function(m) {
+    const id = 'chk-mat-' + m.replace(/[^a-zA-Z0-9]/g, '_');
+    return '<div class="form-check">' +
+      '<input class="form-check-input" type="checkbox" value="' + escapeHtml(m) + '" id="' + id + '"' +
+        (usateSet[m] ? ' checked' : '') + '>' +
+      '<label class="form-check-label" for="' + id + '">' + escapeHtml(m) + '</label>' +
+      '</div>';
+  }).join('');
+}
+
+function applicaMaterieCrediti() {
+  const checks = document.querySelectorAll('#crediti-materie-checklist input[type=checkbox]:checked');
+  const scelte = Array.from(checks).map(function(c) { return c.value; });
+  creditiMaterieSelezionate = scelte.length > 0 ? scelte : null;
+  toggleModificaMaterieCrediti();
+  caricaCrediti();
+}
+
+function renderCrediti(perClasse) {
+  const cont = document.getElementById('crediti-content');
+  const classi = Object.keys(perClasse).sort();
+  if (classi.length === 0) {
+    cont.innerHTML = '<div class="alert alert-light text-center">Nessun credito trovato per le materie selezionate.</div>';
+    return;
+  }
+  let html = '';
+  classi.forEach(function(cls) {
+    html += '<h6 class="mt-3 mb-2 border-bottom pb-1">Classe ' + escapeHtml(cls) + '</h6>';
+    html += '<div class="list-group mb-3">';
+    perClasse[cls].forEach(function(a) {
+      const badgeCls = a.stato === 'riconosciuto' ? 'bg-success' : 'bg-warning text-dark';
+      const votoTxt = (a.voto === null || a.voto === undefined) ? '—' : a.voto;
+      html += '<div class="list-group-item d-flex justify-content-between align-items-center flex-wrap gap-2">' +
+        '<div><strong>' + escapeHtml(a.nome) + '</strong><br><small class="small-muted">' + escapeHtml(a.materia) + '</small></div>' +
+        '<div class="text-end">' +
+          '<span class="badge ' + badgeCls + '">' + escapeHtml(a.stato) + '</span> ' +
+          '<span class="badge bg-light text-dark border">Voto: ' + escapeHtml(String(votoTxt)) + '</span>' +
+        '</div>' +
+        '</div>';
+    });
+    html += '</div>';
+  });
+  cont.innerHTML = html;
 }
 
 // ═══════════════════════════════════════════════════════════════
