@@ -502,7 +502,10 @@
   <div id="pane-crediti" class="hide">
     <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
       <h4 class="mb-0">🎓 Crediti riconosciuti</h4>
-      <button class="btn btn-sm btn-outline-secondary" onclick="toggleModificaMaterieCrediti()">✏️ Modifica materie</button>
+      <div class="d-flex gap-2">
+        <button class="btn btn-sm btn-outline-success" onclick="esportaCsvCrediti()">⬇️ Esporta CSV</button>
+        <button class="btn btn-sm btn-outline-secondary" onclick="toggleModificaMaterieCrediti()">✏️ Modifica materie</button>
+      </div>
     </div>
     <p class="small-muted mb-2" id="crediti-materie-info">Caricamento...</p>
     <div id="crediti-materie-editor" class="card p-3 mb-3" style="display:none;">
@@ -1796,7 +1799,10 @@ function applicaMaterieCrediti() {
   caricaCrediti();
 }
 
+let creditiUltimoPerClasse = null;
+
 function renderCrediti(perClasse) {
+  creditiUltimoPerClasse = perClasse;
   const cont = document.getElementById('crediti-content');
   const classi = Object.keys(perClasse).sort();
   if (classi.length === 0) {
@@ -1810,8 +1816,12 @@ function renderCrediti(perClasse) {
     perClasse[cls].forEach(function(a) {
       const badgeCls = a.stato === 'riconosciuto' ? 'bg-success' : 'bg-warning text-dark';
       const votoTxt = (a.voto === null || a.voto === undefined) ? '—' : a.voto;
+      const badgePrimoAnno = a.creditoPrimoAnno
+        ? ' <span class="badge bg-primary" title="Credito riconosciuto per l\'intero 1° anno: frequenta da dicembre in poi">📌 1° anno</span>'
+        : '';
       html += '<div class="list-group-item d-flex justify-content-between align-items-center flex-wrap gap-2">' +
-        '<div><strong>' + escapeHtml(a.nome) + '</strong><br><small class="small-muted">' + escapeHtml(a.materia) + '</small></div>' +
+        '<div><strong>' + escapeHtml(a.nome) + '</strong>' + badgePrimoAnno +
+          '<br><small class="small-muted">' + escapeHtml(a.materia) + '</small></div>' +
         '<div class="text-end">' +
           '<span class="badge ' + badgeCls + '">' + escapeHtml(a.stato) + '</span> ' +
           '<span class="badge bg-light text-dark border">Voto: ' + escapeHtml(String(votoTxt)) + '</span>' +
@@ -1821,6 +1831,41 @@ function renderCrediti(perClasse) {
     html += '</div>';
   });
   cont.innerHTML = html;
+}
+
+function esportaCsvCrediti() {
+  if (!creditiUltimoPerClasse || Object.keys(creditiUltimoPerClasse).length === 0) {
+    alert('Nessun dato da esportare.');
+    return;
+  }
+  const righe = [['Classe', 'Nome', 'Materia', 'Voto', 'Stato', 'Credito 1° anno']];
+  Object.keys(creditiUltimoPerClasse).sort().forEach(function(cls) {
+    creditiUltimoPerClasse[cls].forEach(function(a) {
+      righe.push([
+        cls, a.nome, a.materia,
+        (a.voto === null || a.voto === undefined) ? '' : a.voto,
+        a.stato,
+        a.creditoPrimoAnno ? 'Sì' : 'No'
+      ]);
+    });
+  });
+  const csv = righe.map(function(r) {
+    return r.map(function(v) {
+      const s = String(v === null || v === undefined ? '' : v).replace(/"/g, '""');
+      return '"' + s + '"';
+    }).join(';');
+  }).join('\r\n');
+  const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const oggi = new Date();
+  const stamp = oggi.getFullYear() + '-' + String(oggi.getMonth() + 1).padStart(2, '0') + '-' + String(oggi.getDate()).padStart(2, '0');
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'crediti_' + stamp + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 // ═══════════════════════════════════════════════════════════════
