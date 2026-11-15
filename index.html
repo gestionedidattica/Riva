@@ -679,6 +679,8 @@ const GIORNI_BREVI = ["LUN","MAR","MER","GIO","VEN","SAB","DOM"];
 // API LAYER
 // ═══════════════════════════════════════════════════════════════
 async function apiCall(action, payload, tokenOverride) {
+  // Dopo una modifica i dati in cache non sono più attendibili
+  if (/^(toggleEsonero|coordSetStato|cambiaVista|changePassword|processBooking)$/.test(action)) swrClear();
   // POST con corpo JSON (text/plain evita il preflight CORS di Apps Script).
   // Il token viaggia nel corpo, mai nell'URL: così non resta nei log né nella cronologia.
   const body = JSON.stringify({
@@ -704,6 +706,59 @@ async function apiCall(action, payload, tokenOverride) {
     throw new Error(data.error || 'Sessione scaduta.');
   }
   return data;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CACHE "mostra subito, aggiorna dopo" (stale-while-revalidate)
+// Solo per letture non sensibili. Browser: sessionStorage (sparisce alla chiusura della scheda);
+// app installata: localStorage. Si svuota a ogni logout, login e modifica dei dati.
+// ═══════════════════════════════════════════════════════════════
+const SWR_AZIONI = { getDashboard:1, getCalendarioAttivita:1, getElencoAttivita:1, getScrutini:1, getBooks:1, getOrarioPerDocente:1 };
+const SWR_PREFIX = 'rivapp_c:';
+const SWR_MAX_ETA = 12 * 3600 * 1000;
+function _swrStore() { try { return _isAppInstalled() ? window.localStorage : window.sessionStorage; } catch (e) { return null; } }
+function _swrOk(action, payload) {
+  if (!SWR_AZIONI[action]) return false;
+  if (action === 'getOrarioPerDocente' && payload && payload.nomeDocente) return false;   // orari di altri: mai in cache
+  return true;
+}
+function _swrKey(action, payload) { return SWR_PREFIX + action + ':' + JSON.stringify(payload || {}); }
+function swrGet(action, payload) {
+  if (!_swrOk(action, payload)) return null;
+  const st = _swrStore(); if (!st) return null;
+  try {
+    const o = JSON.parse(st.getItem(_swrKey(action, payload)) || 'null');
+    if (o && o.t && (Date.now() - o.t) < SWR_MAX_ETA && o.d) return o.d;
+  } catch (e) {}
+  return null;
+}
+function swrPut(action, payload, data) {
+  if (!_swrOk(action, payload)) return;
+  const st = _swrStore(); if (!st) return;
+  try { st.setItem(_swrKey(action, payload), JSON.stringify({ t: Date.now(), d: data })); } catch (e) {}
+}
+function swrClear() {
+  [window.localStorage, window.sessionStorage].forEach(function(st) {
+    try {
+      const del = [];
+      for (let i = 0; i < st.length; i++) { const k = st.key(i); if (k && k.indexOf(SWR_PREFIX) === 0) del.push(k); }
+      del.forEach(function(k) { st.removeItem(k); });
+    } catch (e) {}
+  });
+}
+// Mostra subito la copia salvata (se c'è), poi sostituisce con i dati freschi dal server.
+// onData(dati, daCache, giaMostrato): daCache=true per la copia salvata; giaMostrato=true se i dati freschi arrivano dopo.
+function apiSWR(action, payload, onData) {
+  const c = swrGet(action, payload);
+  let mostrato = false;
+  if (c) { mostrato = true; try { onData(c, true, false); } catch (e) { console.log(e); } }
+  return apiCall(action, payload).then(function(res) {
+    const errore = !res || res.error || res.success === false;
+    if (!errore) swrPut(action, payload, res);
+    if (mostrato && errore) return res;          // meglio i dati vecchi di un errore a schermo
+    onData(res, false, mostrato);
+    return res;
+  }).catch(function(err) { if (mostrato) return null; throw err; });
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -749,8 +804,9 @@ function doLogin() {
       if (!res.success) return showError('login-err', res.message || 'Errore login.');
       sessionToken = res.sessionToken;
       try { localStorage.setItem('cdc_token', sessionToken); } catch (e) {}
+      swrClear();
       stateUser = res.user;
-      mostraDashboard();
+      mostraDashboard(res.dashboard);
     })
     .catch(function(err) {
       loaderLogin(false);
@@ -768,7 +824,8 @@ function logout() {
       .then(function() { return apiCall('logout', {}, tk); }).catch(function(){});
   }
   sessionToken = null; stateUser = null; stateDashboard = null;
-  try { localStorage.removeItem('cdc_token'); localStorage.removeItem('cdc_user'); localStorage.removeItem('rivapp_fcm'); } catch (e) {}
+  try { localStorage.removeItem('cdc_token'); localStorage.removeItem('cdc_user'); localStorage.removeItem('rivapp_fcm'); localStorage.removeItem('rivapp_fcm_ts'); } catch (e) {}
+  swrClear();
   hide('btn-emergenza'); hide('btn-push'); hide('btn-vista');
   document.getElementById('login-pwd').value = '';
   hide('view-dashboard'); hide('navbar');
@@ -853,12 +910,14 @@ function cambiaPwd() {
 // ═══════════════════════════════════════════════════════════════
 // DASHBOARD
 // ═══════════════════════════════════════════════════════════════
-function mostraDashboard() {
+function mostraDashboard(dash) {
   hide('view-login'); show('view-dashboard'); show('navbar');
   document.getElementById('user-info').textContent = stateUser.displayName + ' (' + stateUser.email + ')';
   avviaControlloInattivita();
-  caricaDashboard();
-  initPushNotifications();
+  if (dash && !dash.error) { swrPut('getDashboard', {}, dash); applicaDashboard(dash, false); }
+  else caricaDashboard();
+  // Le notifiche si attivano dopo che la schermata è già pronta (non rallentano l'apertura)
+  setTimeout(initPushNotifications, 1500);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -917,9 +976,13 @@ function attivaPush(daClick) {
         if (perm !== 'granted') { initPushNotifications(); return; }
         return messaging.getToken({ vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: registration }).then(function(tok) {
           if (!tok) return;
+          // Già registrato da questo dispositivo di recente: salto la chiamata al server (ripeto ogni 7 giorni)
+          let prev = null, ts = 0;
+          try { prev = localStorage.getItem('rivapp_fcm'); ts = parseInt(localStorage.getItem('rivapp_fcm_ts') || '0', 10) || 0; } catch (e) {}
+          if (!daClick && prev === tok && ts && (Date.now() - ts) < 7 * 24 * 3600 * 1000) { hide('btn-push'); return; }
           return apiCall('registraFcmToken', { token: tok }).then(function(r) {
             if (r && r.success) {
-              try { localStorage.setItem('rivapp_fcm', tok); } catch (e) {}
+              try { localStorage.setItem('rivapp_fcm', tok); localStorage.setItem('rivapp_fcm_ts', String(Date.now())); } catch (e) {}
               hide('btn-push');
               if (daClick) _miniToast('Notifiche attivate su questo dispositivo.');
             } else if (daClick) { alert((r && r.message) || 'Impossibile attivare le notifiche.'); }
@@ -1077,10 +1140,7 @@ function avviaControlloInattivita() {
   document.addEventListener('visibilitychange', function() { if (!document.hidden) _idleControlla(); });
 }
 
-function caricaDashboard() {
-  loaderDash(true);
-  apiCall('getDashboard', {})
-    .then(function(res) {
+function applicaDashboard(res, giaMostrato) {
       loaderDash(false);
       if (res.error) return alert('Errore: ' + res.error);
       stateDashboard = res;
@@ -1106,7 +1166,7 @@ function caricaDashboard() {
         document.getElementById('tab-biblioteca').classList.remove('hide');
 
         renderSegreteria(res.segreteria);
-        switchTab('segr');
+        if (!giaMostrato) switchTab('segr');
         return;
       }
 
@@ -1121,8 +1181,12 @@ function caricaDashboard() {
       show('tab-orario');
       show('tab-scrutini');
       document.getElementById('tab-evac').classList.remove('hide');
-      switchTab('cdc');
-    })
+      if (!giaMostrato) switchTab('cdc');
+}
+
+function caricaDashboard() {
+  loaderDash(true);
+  apiSWR('getDashboard', {}, function(res, daCache, giaMostrato) { applicaDashboard(res, giaMostrato); })
     .catch(function(err) { loaderDash(false); alert('Errore server: ' + err.message); });
 }
 
@@ -1378,8 +1442,7 @@ if (oggiInit.getFullYear() < 2025 || (oggiInit.getFullYear() === 2025 && oggiIni
 
 function caricaCalendarioAttivita() {
   loaderDash(true);
-  apiCall('getCalendarioAttivita', { mese: calState.meseCorrente, anno: calState.annoCorrente })
-    .then(function(res) { loaderDash(false); calState.datiMese = res; calState.mesiDisponibili = res.mesiDisponibili || []; renderCalendario(); })
+  apiSWR('getCalendarioAttivita', { mese: calState.meseCorrente, anno: calState.annoCorrente }, function(res) { loaderDash(false); calState.datiMese = res; calState.mesiDisponibili = res.mesiDisponibili || []; renderCalendario(); })
     .catch(function(err) { loaderDash(false); alert('Errore caricamento calendario: ' + err.message); });
 }
 function cambiaMese(delta) {
@@ -1477,8 +1540,7 @@ function toggleVistaElenco() {
 }
 function caricaElencoAttivita() {
   loaderDash(true);
-  apiCall('getElencoAttivita', {})
-    .then(function(res) { loaderDash(false); renderElencoAttivita(res); })
+  apiSWR('getElencoAttivita', {}, function(res) { loaderDash(false); renderElencoAttivita(res); })
     .catch(function(err) { loaderDash(false); alert('Errore: ' + err.message); });
 }
 function renderElencoAttivita(lista) {
@@ -1528,8 +1590,7 @@ function _fetchOrario(nomeDocente) {
   const ldr = document.getElementById('orario-loader');
   ldr.classList.remove('hide');
   document.getElementById('orario-container').innerHTML = '';
-  apiCall('getOrarioPerDocente', { nomeDocente: nomeDocente || '' })
-    .then(function(res) {
+  apiSWR('getOrarioPerDocente', { nomeDocente: nomeDocente || '' }, function(res) {
       ldr.classList.add('hide');
       if (res.error) { document.getElementById('orario-nome-docente').textContent = res.error; return; }
       renderOrario(res);
@@ -1703,8 +1764,7 @@ function _renderMotivazioniFiltered(lista) {
 // ═══════════════════════════════════════════════════════════════
 function caricaScrutini() {
   loaderDash(true);
-  apiCall('getScrutini', {})
-    .then(function(res) { loaderDash(false); if (res.error) return alert('Errore: ' + res.error); renderScrutini(res.scrutini || []); })
+  apiSWR('getScrutini', {}, function(res) { loaderDash(false); if (res.error) return alert('Errore: ' + res.error); renderScrutini(res.scrutini || []); })
     .catch(function(err) { loaderDash(false); alert('Errore caricamento scrutini: ' + err.message); });
 }
 function renderScrutini(lista) {
@@ -1736,8 +1796,7 @@ let sortLibroField = 'titolo', sortLibroAsc = true;
 function caricaBiblioteca() {
   document.getElementById('lib-loader').style.display = 'block';
   document.getElementById('lib-book-list').innerHTML = '';
-  apiCall('getBooks', {})
-    .then(function(res) {
+  apiSWR('getBooks', {}, function(res) {
       document.getElementById('lib-loader').style.display = 'none';
       if (!res.success) { document.getElementById('lib-book-list').innerHTML = '<div class="alert alert-danger">Errore: ' + escapeHtml(res.message || 'Impossibile caricare i libri') + '</div>'; return; }
       libriGlobali = (res.books || []).map(function(libro) {
@@ -2102,6 +2161,13 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   }
   if (sessionToken) {
+    const dc = swrGet('getDashboard', {});
+    if (dc && dc.user) {
+      // Apertura immediata con i dati salvati; il server conferma/aggiorna subito dopo
+      stateUser = dc.user;
+      mostraDashboard();
+      return;
+    }
     apiCall('checkSession', {})
       .then(function(res) {
         if (res && res.success && res.user) {
