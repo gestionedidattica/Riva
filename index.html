@@ -195,6 +195,11 @@
     @media (min-width:768px) {
       #install-banner { left:auto; right:24px; bottom:24px; max-width:420px; }
     }
+    .pw-wrap { position:relative; }
+    .pw-wrap > input { padding-right:2.6rem; }
+    .pw-eye { position:absolute; right:4px; top:50%; transform:translateY(-50%); border:0; background:transparent;
+              padding:6px 9px; line-height:1; color:#6c757d; font-size:1.15rem; cursor:pointer; }
+    .pw-eye:hover { color:#212529; }
   </style>
 </head>
 <body>
@@ -208,6 +213,7 @@
       </a>
       <span id="user-info" class="navbar-user small-muted"></span>
       <div class="navbar-actions">
+        <button id="btn-vista" class="btn btn-outline-dark btn-sm hide" onclick="cambiaVista()"></button>
         <button id="btn-emergenza" class="btn btn-danger btn-sm fw-bold hide" onclick="apriEmergenza()">🚨 Invia messaggio emergenza</button>
         <button id="btn-push" class="btn btn-outline-primary btn-sm hide" onclick="attivaPush(true)">🔔 Attiva notifiche</button>
         <button class="btn btn-outline-secondary btn-sm" onclick="apriCambioPwd()">🔑 Password</button>
@@ -763,7 +769,7 @@ function logout() {
   }
   sessionToken = null; stateUser = null; stateDashboard = null;
   try { localStorage.removeItem('cdc_token'); localStorage.removeItem('cdc_user'); localStorage.removeItem('rivapp_fcm'); } catch (e) {}
-  hide('btn-emergenza'); hide('btn-push');
+  hide('btn-emergenza'); hide('btn-push'); hide('btn-vista');
   document.getElementById('login-pwd').value = '';
   hide('view-dashboard'); hide('navbar');
   show('view-login');
@@ -850,6 +856,7 @@ function cambiaPwd() {
 function mostraDashboard() {
   hide('view-login'); show('view-dashboard'); show('navbar');
   document.getElementById('user-info').textContent = stateUser.displayName + ' (' + stateUser.email + ')';
+  avviaControlloInattivita();
   caricaDashboard();
   initPushNotifications();
 }
@@ -985,6 +992,91 @@ function inviaProvaEmergenza() {
     .catch(function(err) { _emergBusy(false); showError('emerg-err', err.message); });
 }
 
+// ── Cambio visione personale / segreteria (solo account abilitato dal server) ──
+function _aggiornaBtnVista(res) {
+  const b = document.getElementById('btn-vista');
+  if (!b) return;
+  if (res && res.puoCambiaVista === true) {
+    b.textContent = res.vistaSegreteria ? 'Passa alla visione personale' : 'Passa alla visione segreteria';
+    b.dataset.vista = res.vistaSegreteria ? 'PERSONALE' : 'SEGRETERIA';
+    b.classList.remove('hide');
+  } else { b.classList.add('hide'); }
+}
+function cambiaVista() {
+  const b = document.getElementById('btn-vista');
+  const nuova = b && b.dataset.vista;
+  if (nuova !== 'SEGRETERIA' && nuova !== 'PERSONALE') return;
+  b.disabled = true;
+  apiCall('cambiaVista', { vista: nuova })
+    .then(function(res) {
+      b.disabled = false;
+      if (!res || !res.success) { alert((res && res.message) || 'Operazione non riuscita.'); return; }
+      // azzero i dati in memoria della visione precedente e ricarico tutto dal server
+      orarioDocentiList = []; orarioDocenteCorrente = null; stateDashboard = null;
+      try { calState.datiMese = null; } catch (e) {}
+      caricaDashboard();
+    })
+    .catch(function(err) { b.disabled = false; alert(err.message); });
+}
+
+// ── Occhio per mostrare/nascondere la password ──
+function installaOcchi() {
+  document.querySelectorAll('input[type="password"]').forEach(function(inp) {
+    if (inp.dataset.occhio) return;
+    inp.dataset.occhio = '1';
+    const wrap = document.createElement('div');
+    const margini = (inp.className.match(/\b[mp][tbxy]?-\d\b/g) || []).filter(function(c) { return /^m/.test(c); });
+    margini.forEach(function(c) { inp.classList.remove(c); });
+    wrap.className = 'pw-wrap ' + margini.join(' ');
+    inp.parentNode.insertBefore(wrap, inp);
+    wrap.appendChild(inp);
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'pw-eye'; b.tabIndex = -1;
+    b.setAttribute('aria-label', 'Mostra password');
+    b.innerHTML = '<i class="bi bi-eye"></i>';
+    let timer = null;
+    function nascondi() { inp.type = 'password'; b.innerHTML = '<i class="bi bi-eye"></i>'; b.setAttribute('aria-label', 'Mostra password'); }
+    b.addEventListener('click', function() {
+      if (inp.type === 'password') {
+        inp.type = 'text'; b.innerHTML = '<i class="bi bi-eye-slash"></i>'; b.setAttribute('aria-label', 'Nascondi password');
+        clearTimeout(timer); timer = setTimeout(nascondi, 20000);   // si richiude da sola
+      } else { clearTimeout(timer); nascondi(); }
+      inp.focus();
+    });
+    wrap.appendChild(b);
+  });
+}
+document.addEventListener('DOMContentLoaded', installaOcchi);
+
+// ── Disconnessione per inattività (solo da browser: nell'app installata non succede) ──
+const IDLE_MAX_MS = 10 * 60 * 1000;
+let _idleLast = Date.now(), _idleScritto = 0, _idleAttivo = false;
+function _idleTocca() {
+  const n = Date.now(); _idleLast = n;
+  if (n - _idleScritto > 5000) { _idleScritto = n; try { localStorage.setItem('rivapp_last', String(n)); } catch (e) {} }
+}
+function _idleUltimo() {
+  let st = 0; try { st = parseInt(localStorage.getItem('rivapp_last') || '0', 10) || 0; } catch (e) {}
+  return Math.max(_idleLast, st);
+}
+function _idleControlla() {
+  if (!sessionToken || _isAppInstalled()) return;
+  if (Date.now() - _idleUltimo() > IDLE_MAX_MS) {
+    logout();
+    showError('login-err', 'Sei stato disconnesso dopo 10 minuti di inattività. Accedi di nuovo.');
+  }
+}
+function avviaControlloInattivita() {
+  _idleTocca();
+  if (_idleAttivo) return;
+  _idleAttivo = true;
+  ['mousemove','mousedown','keydown','touchstart','scroll','click'].forEach(function(ev) {
+    document.addEventListener(ev, _idleTocca, { passive: true, capture: true });
+  });
+  setInterval(_idleControlla, 15000);
+  document.addEventListener('visibilitychange', function() { if (!document.hidden) _idleControlla(); });
+}
+
 function caricaDashboard() {
   loaderDash(true);
   apiCall('getDashboard', {})
@@ -994,6 +1086,7 @@ function caricaDashboard() {
       stateDashboard = res;
       isSegreteria = !!res.isSegreteria;
       if (res.puoEmergenza === true) show('btn-emergenza'); else hide('btn-emergenza');
+      _aggiornaBtnVista(res);
 
       // Tab sempre visibili a tutti
       document.getElementById('tab-biblioteca').classList.remove('hide');
@@ -2000,6 +2093,13 @@ document.addEventListener('DOMContentLoaded', function() {
       const c = document.getElementById('motivo-count');
       if (c) c.textContent = String(motTxt.value.length);
     });
+  }
+  if (sessionToken && !_isAppInstalled()) {
+    let ult = 0; try { ult = parseInt(localStorage.getItem('rivapp_last') || '0', 10) || 0; } catch (e) {}
+    if (Date.now() - ult > IDLE_MAX_MS) {
+      logout();   // da browser, dopo 10 minuti di inattività si riparte dal login
+      showError('login-err', 'Per sicurezza la sessione è scaduta. Accedi di nuovo.');
+    }
   }
   if (sessionToken) {
     apiCall('checkSession', {})
