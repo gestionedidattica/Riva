@@ -239,7 +239,7 @@
       <div class="text-center mt-3">
         <a href="#" onclick="apriResetStep1();return false;">Password dimenticata?</a>
       </div>
-      <p class="text-center small-muted mt-3 mb-0">Primo accesso? Usa la password predefinita comunicata dalla scuola.</p>
+      <p class="text-center small-muted mt-3 mb-0">Primo accesso o password dimenticata? Tocca «Password dimenticata?»: ti inviamo un codice sull'email istituzionale.</p>
     </div>
 
     <div id="reset-step1" class="hide">
@@ -997,7 +997,9 @@ function caricaDashboard() {
 
       // Tab sempre visibili a tutti
       document.getElementById('tab-biblioteca').classList.remove('hide');
-      document.getElementById('tab-crediti').classList.remove('hide');
+      // "Crediti": solo docenti con S o DS in Rubrica (il server lo ricontrolla)
+      if (res.puoCrediti === true) document.getElementById('tab-crediti').classList.remove('hide');
+      else document.getElementById('tab-crediti').classList.add('hide');
 
       if (res.isSegreteria) {
         // Segreteria: nasconde "I miei CdC" ed "Evacuazione", mostra tutto il resto
