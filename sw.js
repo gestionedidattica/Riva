@@ -1,14 +1,9 @@
-// Service Worker - Gestione CdC ITIS Riva
+/* RivApp - service worker: cache offline di base + notifiche push (FCM, messaggi solo-dati).
+   Le notifiche le mostra SEMPRE questo file (il server non invia mai il blocco "notification"),
+   così non ci sono doppioni e il testo è sotto il controllo del server. */
+importScripts('firebase-app-compat.js', 'firebase-messaging-compat.js');
 
-// ═══════════════════════════════════════════════════════════════
-// NOTIFICHE PUSH (Firebase Cloud Messaging) — gestisce le notifiche
-// quando l'app NON è aperta (schermo spento, browser chiuso, altra
-// scheda). Le notifiche a schermo aperto sono gestite direttamente
-// in Index.html tramite messaging.onMessage().
-// ═══════════════════════════════════════════════════════════════
-importScripts('https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js');
-importScripts('https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging-compat.js');
-
+// Valori pubblici per progetto (non sono segreti: vanno protetti con le restrizioni in Google Cloud).
 firebase.initializeApp({
   apiKey: "AIzaSyC1rsmLIVUr9drlaD9tNK1Iftj-V1taHY8",
   authDomain: "rivapp-ed917.firebaseapp.com",
@@ -17,104 +12,75 @@ firebase.initializeApp({
   messagingSenderId: "553925987080",
   appId: "1:553925987080:web:b9c80e97abb6c24c9ffabd"
 });
+const messaging = firebase.messaging();
 
-const _messaging = firebase.messaging();
+const CACHE = 'rivapp-v3';
+const SHELL = ['./', './index.html', './manifest.json', './icon-512.png'];
 
-// Notifica di sistema quando l'app è in background/chiusa.
-_messaging.onBackgroundMessage(function(payload) {
-  const n = payload.notification || {};
-  const title = n.title || 'RivApp';
-  const options = {
-    body: n.body || '',
-    icon: 'icon-512.png',
-    badge: 'icon-512.png'
-  };
-  self.registration.showNotification(title, options);
+self.addEventListener('install', function (e) {
+  self.skipWaiting();
+  e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(SHELL).catch(function () {}); }));
 });
 
-// Tocco sulla notifica: apre (o porta in primo piano) l'app.
-self.addEventListener('notificationclick', function(event) {
-  event.notification.close();
-  const url = (event.notification.data && event.notification.data.link) ||
-              'https://slammix1559.github.io/Riva/';
-  event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(list) {
-      for (let i = 0; i < list.length; i++) {
-        if (list[i].url.indexOf(url) >= 0 && 'focus' in list[i]) return list[i].focus();
+self.addEventListener('activate', function (e) {
+  e.waitUntil(
+    caches.keys()
+      .then(function (keys) { return Promise.all(keys.filter(function (k) { return k !== CACHE; }).map(function (k) { return caches.delete(k); })); })
+      .then(function () { return self.clients.claim(); })
+  );
+});
+
+// Solo risorse dello stesso sito, solo GET. Le chiamate al server (POST, altro dominio) non si toccano mai.
+self.addEventListener('fetch', function (e) {
+  const req = e.request;
+  if (req.method !== 'GET') return;
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin) return;
+  e.respondWith(
+    fetch(req).then(function (res) {
+      if (res && res.status === 200 && res.type === 'basic') {
+        const copy = res.clone();
+        caches.open(CACHE).then(function (c) { c.put(req, copy); });
       }
-      if (clients.openWindow) return clients.openWindow(url);
+      return res;
+    }).catch(function () { return caches.match(req).then(function (m) { return m || caches.match('./index.html'); }); })
+  );
+});
+
+// ── Notifiche ───────────────────────────────────────────────
+function _mostra(d) {
+  d = d || {};
+  const emergenza = d.tipo === 'EMERGENZA';
+  const titolo = String(d.titolo || 'RivApp').slice(0, 120);
+  const testo = String(d.testo || '').slice(0, 300);
+  const opz = {
+    body: testo,
+    icon: 'icon-512.png',
+    badge: 'icon-512.png',
+    tag: emergenza ? 'rivapp-emergenza' : 'rivapp-' + String(d.tipo || 'info'),
+    renotify: true,
+    data: { tipo: String(d.tipo || '') }
+  };
+  if (emergenza) {
+    opz.requireInteraction = true;            // resta sullo schermo finché non viene chiusa
+    opz.vibrate = [600, 200, 600, 200, 600, 200, 1200];
+    opz.silent = false;
+  }
+  return self.registration.showNotification(titolo, opz);
+}
+
+messaging.onBackgroundMessage(function (payload) {
+  return _mostra(payload && payload.data);
+});
+
+self.addEventListener('notificationclick', function (e) {
+  e.notification.close();
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (list) {
+      for (let i = 0; i < list.length; i++) {
+        if ('focus' in list[i]) return list[i].focus();
+      }
+      return self.clients.openWindow('./');
     })
-  );
-});
-
-// ═══════════════════════════════════════════════════════════════
-// CACHE / OFFLINE (logica originale, invariata)
-// ═══════════════════════════════════════════════════════════════
-const CACHE_NAME = 'cdc-riva-v1';
-const ASSETS = [
-  './',
-  './index.html',
-  './manifest.json'
-];
-
-// Installazione: pre-cache dei file base dell'app
-self.addEventListener('install', function(event) {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then(function(cache) {
-      return cache.addAll(ASSETS);
-    }).then(function() { return self.skipWaiting(); })
-  );
-});
-
-// Attivazione: pulizia delle cache vecchie
-self.addEventListener('activate', function(event) {
-  event.waitUntil(
-    caches.keys().then(function(keys) {
-      return Promise.all(
-        keys.filter(function(k) { return k !== CACHE_NAME; })
-            .map(function(k) { return caches.delete(k); })
-      );
-    }).then(function() { return self.clients.claim(); })
-  );
-});
-
-// Fetch:
-// - le chiamate all'API (script.google.com) passano SEMPRE dalla rete, mai cache
-// - i file dell'app: prima la rete, se offline si usa la cache
-self.addEventListener('fetch', function(event) {
-  const url = event.request.url;
-
-  // Le chiamate all'API non vanno mai messe in cache
-  if (url.indexOf('script.google.com') !== -1) {
-    return; // lascia gestire al browser normalmente
-  }
-
-  // Metto in cache SOLO le richieste GET dello stesso sito. La Cache API
-  // non supporta richieste POST (es. le chiamate di Firebase per
-  // registrare il dispositivo alle notifiche push), e le richieste verso
-  // altri domini (Firebase, CDN, ecc.) non ci servono offline: le lascio
-  // gestire normalmente dal browser senza intercettarle.
-  const isGet = event.request.method === 'GET';
-  const isSameOrigin = url.indexOf(self.location.origin) === 0;
-  if (!isGet || !isSameOrigin) {
-    return;
-  }
-
-  event.respondWith(
-    fetch(event.request)
-      .then(function(res) {
-        // aggiorno la cache con la versione fresca
-        const copia = res.clone();
-        caches.open(CACHE_NAME).then(function(cache) {
-          cache.put(event.request, copia);
-        });
-        return res;
-      })
-      .catch(function() {
-        // offline: provo a servire dalla cache
-        return caches.match(event.request).then(function(cached) {
-          return cached || caches.match('./index.html');
-        });
-      })
   );
 });
