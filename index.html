@@ -945,9 +945,28 @@ function _push_supportato() {
   return ('Notification' in window) && ('serviceWorker' in navigator) && ('PushManager' in window) && typeof firebase !== 'undefined';
 }
 
+// Spiega perché le notifiche non sono disponibili (così non resta nessun silenzio)
+function _pushMotivi() {
+  const m = [];
+  if (!('Notification' in window)) m.push('questo browser non supporta le notifiche');
+  if (!('serviceWorker' in navigator)) m.push('il service worker non è disponibile (serve una connessione sicura https)');
+  if (!('PushManager' in window)) m.push('le notifiche push non sono attive in questa modalità. Su iPhone/iPad (iOS 16.4 o successivo) apri RivApp dall\'icona sulla schermata Home, non da Safari');
+  if (typeof firebase === 'undefined') m.push('la libreria Firebase non è stata caricata: controlla che firebase-app-compat.js e firebase-messaging-compat.js siano nella stessa cartella di Index.html su GitHub');
+  return m;
+}
+function _pushErrore(err, daClick) {
+  const b = document.getElementById('btn-push');
+  if (b) { b.classList.remove('hide'); b.textContent = '🔔 Riprova ad attivare le notifiche'; }
+  console.log('Notifiche non attivate:', err && (err.code || err.message));
+  if (daClick) alert('Impossibile attivare le notifiche: ' + ((err && (err.code ? err.code + ' - ' : '') + (err.message || '')) || 'errore sconosciuto'));
+}
+
 function initPushNotifications() {
   const b = document.getElementById('btn-push');
-  if (!_push_supportato()) { if (b) b.classList.add('hide'); return; }
+  if (!_push_supportato()) {
+    if (b) { b.classList.remove('hide'); b.textContent = '🔕 Notifiche non disponibili'; }   // si tocca per vedere il motivo
+    return;
+  }
   if (Notification.permission === 'granted') { attivaPush(false); }
   else if (Notification.permission === 'default') { if (b) b.classList.remove('hide'); }
   else { if (b) { b.classList.remove('hide'); b.textContent = '🔕 Notifiche bloccate'; } }
@@ -955,7 +974,7 @@ function initPushNotifications() {
 
 // Su iPhone/iPad il permesso si può chiedere solo dopo un tocco dell'utente: per questo c'è il pulsante.
 function attivaPush(daClick) {
-  if (!_push_supportato()) { if (daClick) alert('Questo dispositivo/browser non supporta le notifiche. Su iPhone: aggiungi prima RivApp alla schermata Home.'); return; }
+  if (!_push_supportato()) { if (daClick) alert('Notifiche non disponibili su questo dispositivo:\n- ' + _pushMotivi().join('\n- ')); return; }
   if (Notification.permission === 'denied') {
     if (daClick) alert('Le notifiche sono bloccate per RivApp. Riattivale dalle impostazioni del browser o del telefono.');
     return;
@@ -973,9 +992,9 @@ function attivaPush(daClick) {
     }
     navigator.serviceWorker.ready.then(function(registration) {
       return Notification.requestPermission().then(function(perm) {
-        if (perm !== 'granted') { initPushNotifications(); return; }
+        if (perm !== 'granted') { if (daClick) alert(perm === 'denied' ? 'Hai negato le notifiche: riattivale dalle impostazioni del telefono o del browser per RivApp.' : 'Permesso notifiche non concesso.'); initPushNotifications(); return; }
         return messaging.getToken({ vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: registration }).then(function(tok) {
-          if (!tok) return;
+          if (!tok) { _pushErrore({ message: 'nessun codice dispositivo ricevuto da Firebase' }, daClick); return; }
           // Già registrato da questo dispositivo di recente: salto la chiamata al server (ripeto ogni 7 giorni)
           let prev = null, ts = 0;
           try { prev = localStorage.getItem('rivapp_fcm'); ts = parseInt(localStorage.getItem('rivapp_fcm_ts') || '0', 10) || 0; } catch (e) {}
@@ -985,12 +1004,12 @@ function attivaPush(daClick) {
               try { localStorage.setItem('rivapp_fcm', tok); localStorage.setItem('rivapp_fcm_ts', String(Date.now())); } catch (e) {}
               hide('btn-push');
               if (daClick) _miniToast('Notifiche attivate su questo dispositivo.');
-            } else if (daClick) { alert((r && r.message) || 'Impossibile attivare le notifiche.'); }
+            } else { _pushErrore({ message: (r && r.message) || 'registrazione rifiutata dal server' }, daClick); }
           });
         });
       });
-    }).catch(function(err) { console.log('Notifiche non attivate:', err && err.message); });
-  } catch (e) { console.log('Init push non riuscito:', e && e.message); }
+    }).catch(function(err) { _pushErrore(err, daClick); });
+  } catch (e) { _pushErrore(e, daClick); }
 }
 
 // Avviso a tutto schermo quando l'emergenza arriva con l'app aperta
