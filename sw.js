@@ -18,7 +18,7 @@ try {
   messaging = firebase.messaging();
 } catch (e) { /* notifiche non disponibili, il resto dell'app funziona */ }
 
-const CACHE = 'rivapp-v4';
+const CACHE = 'rivapp-v5';
 const SHELL = ['./', './index.html', './manifest.json', './icon-512.png'];
 
 self.addEventListener('install', function (e) {
