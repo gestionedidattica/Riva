@@ -1700,7 +1700,7 @@ async function renderGestioneOrario() {
     </div>
     <div class="tab-row" style="margin-bottom:1.25rem">
       <button class="tab-btn active" id="got-pianifica" onclick="switchGOTab('pianifica',this)">📅 Pianifica orario</button>
-      <button class="tab-btn" id="got-abbinamenti" onclick="switchGOTab('abbinamenti',this)">🔗 Abbinamenti UF-Docente</button>
+      <!-- Abbinamenti UF-Docente nascosti: i docenti ora vengono dall'orario reale -->
       <button class="tab-btn" id="got-analisi" onclick="switchGOTab('analisi',this)">📊 Analisi</button>
     </div>
     <div id="go-pane-pianifica"></div>
@@ -1794,6 +1794,20 @@ function _hexToRgba(hex, alpha) {
 function renderGOPianifica() {
   const pane = document.getElementById("go-pane-pianifica");
   if (!pane) return;
+
+  // Se il pannello filtri è già costruito, aggiorna solo UF e docenti senza distruggere lo stato
+  if (document.getElementById("go-anno")) {
+    // Aggiorna solo le options di UF (docenti si aggiornano dopo caricaSlotsMese)
+    const selUF = document.getElementById("go-filtro-uf");
+    if (selUF) {
+      const valUF = selUF.value;
+      selUF.innerHTML = `<option value="">Tutte le UF</option>` +
+        _ufList.map(u=>`<option value="${esc(u.nome)}"${u.nome===valUF?' selected':''}>${esc(u.nome)}</option>`).join("");
+    }
+    caricaSlotsMese();
+    return;
+  }
+
   const oggi = new Date();
   const ufOpts = _ufList.map(u=>`<option value="${esc(u.nome)}">${esc(u.nome)}</option>`).join("");
   const docOpts = _docentiOrario.map(d=>`<option value="${esc(d)}">${esc(d)}</option>`).join("");
