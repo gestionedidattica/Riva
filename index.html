@@ -387,6 +387,7 @@
   <div id="pane-orario" class="hide">
     <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-2">
       <h4 class="mb-0">🕐 Orario</h4>
+      <button id="orario-tipo-btn" class="btn btn-sm btn-outline-primary hide" onclick="cambiaTipoOrario()"></button>
     </div>
     <!-- Ricerca docente (solo segreteria) -->
     <div id="orario-search-wrap" class="d-flex align-items-center gap-2 mb-3 hide" style="position:relative;">
@@ -583,7 +584,7 @@
       </div>
       <div class="modal-body">
         <p class="mb-2"><b>Attenzione:</b> stai dichiarando la tua assenza al CdC di <span id="motivo-cdc-classe">—</span> del <span id="motivo-cdc-data">—</span>.</p>
-        <p class="small-muted mb-3">Una volta salvata, la motivazione sarà <b>definitiva</b> e non potrà essere modificata.</p>
+        <p class="small-muted mb-3">Il coordinatore sarà avvisato. Potrai <b>annullare l'assenza</b> finché il CdC non si è svolto.</p>
         <label class="form-label fw-bold">Motivazione <span class="text-danger">*</span></label>
         <textarea id="motivo-testo" class="form-control" rows="4" maxlength="500" placeholder="Descrivi il motivo dell'assenza..."></textarea>
         <div class="d-flex justify-content-between mt-1">
@@ -672,6 +673,8 @@ let isSegreteria = false;
 // Stato orario
 let orarioDocentiList = [];    // lista docenti caricata una volta
 let orarioDocenteCorrente = null; // null = orario proprio
+let orarioTipoCorrente = '';      // '' = predefinito, 'serale' = orario serale (solo docenti con DS)
+let orarioTipoMostrato = 'diurno';
 
 const GIORNI_BREVI = ["LUN","MAR","MER","GIO","VEN","SAB","DOM"];
 
@@ -835,6 +838,7 @@ function logout() {
   isSegreteria = false;
   orarioDocentiList = [];
   orarioDocenteCorrente = null;
+  orarioTipoCorrente = '';
 }
 
 function apriResetStep1() {
@@ -1094,7 +1098,7 @@ function cambiaVista() {
       b.disabled = false;
       if (!res || !res.success) { alert((res && res.message) || 'Operazione non riuscita.'); return; }
       // azzero i dati in memoria della visione precedente e ricarico tutto dal server
-      orarioDocentiList = []; orarioDocenteCorrente = null; stateDashboard = null;
+      orarioDocentiList = []; orarioDocenteCorrente = null; orarioTipoCorrente = ''; stateDashboard = null;
       try { calState.datiMese = null; } catch (e) {}
       caricaDashboard();
     })
@@ -1271,7 +1275,13 @@ function renderCdcList(d) {
       btnVedi.onclick = function() {
         alert('La tua motivazione:\n\n"' + (c.motivazione || '(nessuna motivazione salvata)') + '"');
       };
+      right.className = 'd-flex flex-wrap gap-2 justify-content-end';
       right.appendChild(btnVedi);
+      const btnAnn = document.createElement('button');
+      btnAnn.className = 'btn btn-sm btn-outline-success';
+      btnAnn.textContent = '↩️ Annulla assenza';
+      btnAnn.onclick = function() { annullaAssenza(c); };
+      right.appendChild(btnAnn);
     } else {
       // Stato PARTECIPA (default): può dichiararsi assente
       const btnAss = document.createElement('button');
@@ -1313,6 +1323,19 @@ function apriModalMotivazione(cdc) {
   document.getElementById('motivo-count').textContent = '0';
   hide('motivo-err');
   new bootstrap.Modal(document.getElementById('modalMotivazione')).show();
+}
+
+function annullaAssenza(cdc) {
+  if (!cdc || !cdc.id) return;
+  if (!confirm('Vuoi annullare la tua assenza al CdC di ' + cdc.classe + ' del ' + cdc.dataIT + '?\n\nLa motivazione verrà cancellata e il coordinatore sarà avvisato.')) return;
+  loaderDash(true);
+  apiCall('toggleEsonero', { idCdc: cdc.id, nuovoStato: 'PARTECIPA', forzaSottosoglia: false, motivazione: '' })
+    .then(function(res) {
+      loaderDash(false);
+      if (!res || !res.success) { alert((res && res.message) || 'Operazione non riuscita.'); return; }
+      caricaDashboard();
+    })
+    .catch(function(err) { loaderDash(false); alert('Errore server: ' + err.message); });
 }
 
 function annullaMotivazione() {
@@ -1609,7 +1632,7 @@ function _fetchOrario(nomeDocente) {
   const ldr = document.getElementById('orario-loader');
   ldr.classList.remove('hide');
   document.getElementById('orario-container').innerHTML = '';
-  apiSWR('getOrarioPerDocente', { nomeDocente: nomeDocente || '' }, function(res) {
+  apiSWR('getOrarioPerDocente', { nomeDocente: nomeDocente || '', tipo: orarioTipoCorrente || '' }, function(res) {
       ldr.classList.add('hide');
       if (res.error) { document.getElementById('orario-nome-docente').textContent = res.error; return; }
       renderOrario(res);
@@ -1618,6 +1641,11 @@ function _fetchOrario(nomeDocente) {
       ldr.classList.add('hide');
       document.getElementById('orario-nome-docente').textContent = 'Errore: ' + err.message;
     });
+}
+
+function cambiaTipoOrario() {
+  orarioTipoCorrente = (orarioTipoMostrato === 'serale') ? 'diurno' : 'serale';
+  _fetchOrario(orarioDocenteCorrente);
 }
 
 function filtraDocentiOrario() {
@@ -1640,6 +1668,7 @@ function filtraDocentiOrario() {
       document.getElementById('orario-docente-input').value = d.displayName;
       sugg.innerHTML = '';
       orarioDocenteCorrente = d.displayName;
+      orarioTipoCorrente = '';
       _fetchOrario(d.displayName);
     };
     sugg.appendChild(item);
@@ -1658,11 +1687,21 @@ function resetRicercaDocente() {
   document.getElementById('orario-docente-input').value = '';
   document.getElementById('orario-docenti-suggerimenti').innerHTML = '';
   orarioDocenteCorrente = null;
+  orarioTipoCorrente = '';
+  document.getElementById('orario-tipo-btn').classList.add('hide');
   document.getElementById('orario-nome-docente').textContent = 'Cerca un docente per visualizzarne l\'orario.';
   document.getElementById('orario-container').innerHTML = '';
 }
 
 function renderOrario(data) {
+  orarioTipoMostrato = data.tipo === 'serale' ? 'serale' : 'diurno';
+  const btnTipo = document.getElementById('orario-tipo-btn');
+  if (btnTipo) {
+    if (data.doppio) {
+      btnTipo.textContent = orarioTipoMostrato === 'serale' ? '☀️ Passa all\'orario diurno' : '🌙 Passa all\'orario serale';
+      btnTipo.classList.remove('hide');
+    } else { btnTipo.classList.add('hide'); }
+  }
   const etichettaTipo = data.tipo === 'serale' ? ' 🌙 (corso Serale)' : '';
   document.getElementById('orario-nome-docente').textContent = 'Docente: ' + data.nome + etichettaTipo;
   const giorni = ["lunedì","martedì","mercoledì","giovedì","venerdì"];
@@ -1726,8 +1765,60 @@ function renderListaMotivazioni(lista) {
     '<input type="text" id="motivazioni-search" class="form-control mb-3" ' +
     'placeholder="🔍 Filtra per docente o classe..." oninput="filtraMotivazioni()">' +
     '<div id="motivazioni-content"></div>';
+  if (isSegreteria) {
+    const nomi = {};
+    motivazioniDataGlobale.forEach(function(m) { nomi[m.docente] = true; });
+    let opz = '<option value="">Tutti i docenti</option>';
+    Object.keys(nomi).sort().forEach(function(n) { opz += '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + '</option>'; });
+    const bar = document.createElement('div');
+    bar.className = 'd-flex flex-wrap align-items-center gap-2 mb-3 p-2 bg-light rounded';
+    bar.innerHTML = '<span class="small fw-bold">Report CdC:</span>' +
+      '<select id="motivazioni-export-doc" class="form-select form-select-sm" style="max-width:260px;">' + opz + '</select>' +
+      '<button class="btn btn-sm btn-outline-success" onclick="esportaCsvAssenze()">⬇️ Esporta CSV</button>';
+    body.insertBefore(bar, body.firstChild);
+  }
   document.getElementById('motivazioni-search').focus();
   _renderMotivazioniFiltered(motivazioniDataGlobale);
+}
+
+function _scaricaCsv(righe, nomeFile) {
+  const csv = righe.map(function(r) {
+    return r.map(function(v) {
+      let s = String(v === null || v === undefined ? '' : v);
+      if (/^[=+\-@\t\r]/.test(s) && !/^-?\d+([.,]\d+)?$/.test(s)) s = "'" + s;   // niente formule eseguite da Excel
+      s = s.replace(/"/g, '""');
+      return '"' + s + '"';
+    }).join(';');
+  }).join('\r\n');
+  const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = nomeFile;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Report delle assenze ai CdC (con motivazione): di tutti i docenti o di uno solo. Solo segreteria.
+function esportaCsvAssenze() {
+  if (!isSegreteria) return;
+  const sel = document.getElementById('motivazioni-export-doc');
+  const doc = sel ? sel.value : '';
+  const lista = (motivazioniDataGlobale || []).filter(function(m) { return !doc || m.docente === doc; });
+  if (lista.length === 0) { alert('Nessuna assenza da esportare.'); return; }
+  const oreDoc = {};
+  lista.forEach(function(m) { oreDoc[m.docente] = (oreDoc[m.docente] || 0) + (parseFloat(m.durataOre) || 0); });
+  const righe = [['Docente', 'Email', 'Classe', 'Data CdC', 'Ora inizio', 'Ora fine', 'Durata (ore)', 'Motivazione', 'Registrata il', 'Totale ore assenza docente']];
+  lista.slice().sort(function(a, b) {
+    return a.docente.localeCompare(b.docente) || (a.dataCdc < b.dataCdc ? -1 : a.dataCdc > b.dataCdc ? 1 : 0);
+  }).forEach(function(m) {
+    righe.push([m.docente, m.emailDocente, m.classe, m.dataCdcIT, m.oraInizio, m.oraFine,
+                (m.durataOre === undefined || m.durataOre === null) ? '' : m.durataOre,
+                m.motivazione, m.quando, Math.round(oreDoc[m.docente] * 100) / 100]);
+  });
+  const oggi = new Date();
+  const stamp = oggi.getFullYear() + '-' + String(oggi.getMonth() + 1).padStart(2, '0') + '-' + String(oggi.getDate()).padStart(2, '0');
+  const chi = doc ? doc.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_|_$/g, '') : 'tutti';
+  _scaricaCsv(righe, 'assenze_cdc_' + chi + '_' + stamp + '.csv');
 }
 
 function filtraMotivazioni() {
